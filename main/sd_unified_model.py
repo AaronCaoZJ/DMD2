@@ -139,11 +139,17 @@ class SDUniModel(nn.Module):
     def sample_backward(self, noisy_image, real_text_embedding, real_pooled_text_embedding):
         batch_size =  noisy_image.shape[0]
         device = noisy_image.device
-        add_time_ids = self.add_time_ids.repeat(batch_size, 1)
-        unet_added_conditions = {
-            "time_ids": add_time_ids,
-            "text_embeds": real_pooled_text_embedding
-        }
+        
+        # Handle SDXL vs SDv1.5 conditioning
+        if self.sdxl:
+            add_time_ids = self.add_time_ids.repeat(batch_size, 1)
+            unet_added_conditions = {
+                "time_ids": add_time_ids,
+                "text_embeds": real_pooled_text_embedding
+            }
+        else:
+            # SDv1.5 doesn't use added conditions
+            unet_added_conditions = None
 
         # we choose a random step and share it across all gpu
         selected_step = torch.randint(low=0, high=self.num_denoising_step, size=(1,), device=device, dtype=torch.long)
@@ -215,6 +221,7 @@ class SDUniModel(nn.Module):
         if self.backward_simulation:
             # we overwrite the denoising timesteps 
             # note: we also use uncorrelated noise 
+            # For SDv1.5, pooled_text_embedding still works as it's just the pooler output
             clean_images, timesteps = self.sample_backward(torch.randn_like(noise), text_embedding, pooled_text_embedding) 
         else:
             clean_images = denoising_dict['images'].to(noise.device)
@@ -343,17 +350,25 @@ class SDUniModel(nn.Module):
                 log_dict = {} 
 
             if visual:
-                decode_key = [
-                    "dmtrain_pred_real_image", "dmtrain_pred_fake_image"
-                ]
+                # 根据 use_decoupled_dmd 选择不同的 decode_key
+                if getattr(self.args, 'use_decoupled_dmd', False):
+                    decode_key = [
+                        "pred_dm_real_cond_image", "pred_dm_fake_cond_image",
+                        "pred_ca_real_cond_image", "pred_ca_real_uncond_image"
+                    ]
+                else:
+                    decode_key = [
+                        "dmtrain_pred_real_image", "dmtrain_pred_fake_image"
+                    ]
 
                 with torch.no_grad():
                     if compute_generator_gradient and not self.args.gan_alone:
                         for key in decode_key:
-                            if self.use_fp16 and self.not_sdxl_vae:
-                                log_dict[key+"_decoded"] = self.decode_image(log_dict[key].detach()[:self.num_visuals].half())
-                            else:
-                                log_dict[key+"_decoded"] = self.decode_image(log_dict[key].detach()[:self.num_visuals]) 
+                            if key in log_dict:  # 检查 key 是否存在
+                                if self.use_fp16 and self.not_sdxl_vae:
+                                    log_dict[key+"_decoded"] = self.decode_image(log_dict[key].detach()[:self.num_visuals].half())
+                                else:
+                                    log_dict[key+"_decoded"] = self.decode_image(log_dict[key].detach()[:self.num_visuals]) 
                     
                     if self.use_fp16 and self.not_sdxl_vae:
                         log_dict["generated_image"] = self.decode_image(generated_image[:self.num_visuals].detach().half())

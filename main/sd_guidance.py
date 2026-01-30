@@ -34,11 +34,12 @@ def predict_noise(
         else:
             condition_input = None 
         
-        if decoupled:
-            return noise_pred_text, noise_pred_uncond
-
         noise_pred = unet(model_input, timesteps, embeddings, added_cond_kwargs=condition_input).sample
         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        
+        if decoupled:
+            return noise_pred_text, noise_pred_uncond
+        
         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
     else:

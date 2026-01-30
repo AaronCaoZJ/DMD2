@@ -33,13 +33,19 @@ class SDDecoupledGuidance(SDGuidance):
                 raise ValueError("timesteps must be provided for Decoupled DMD loss computation")
             
             # 随机采样 CA 和 DM 的时间步
-            ca_timesteps = torch.randint(
-                timesteps,
-                min(self.max_step+1, self.num_train_timesteps),
-                [batch_size],
-                device=latents.device,
-                dtype=torch.long
-            )
+            # 对于CA：每个样本使用其自己的timestep作为下界
+            # 对于batch中的每个样本，采样 [timesteps[i], max_step+1) 范围内的时间步
+            ca_timesteps = torch.zeros(batch_size, device=latents.device, dtype=torch.long)
+            max_timestep = min(self.max_step+1, self.num_train_timesteps)
+            
+            for i in range(batch_size):
+                low = int(timesteps[i].item())
+                if low < max_timestep:
+                    ca_timesteps[i] = torch.randint(low, max_timestep, (1,), device=latents.device, dtype=torch.long)
+                else:
+                    ca_timesteps[i] = low
+            
+            # DM 的时间步：统一从 [min_step, max_step+1) 采样
             dm_timesteps = torch.randint(
                 self.min_step,
                 min(self.max_step+1, self.num_train_timesteps),
@@ -53,12 +59,12 @@ class SDDecoupledGuidance(SDGuidance):
             dm_noisy_latents = self.scheduler.add_noise(latents, torch.randn_like(latents), dm_timesteps)
 
             # DM fake cond
-            pred_dm_fake_cond_noise, _ = predict_noise(
+            pred_dm_fake_cond_noise = predict_noise(
                 self.fake_unet, dm_noisy_latents, text_embedding, uncond_embedding, 
                 dm_timesteps, guidance_scale=self.fake_guidance_scale,
                 unet_added_conditions=unet_added_conditions,
                 uncond_unet_added_conditions=uncond_unet_added_conditions,
-                decoupled=True
+                decoupled=False
             )
             pred_dm_fake_cond_image = get_x0_from_noise(
                 dm_noisy_latents.double(), pred_dm_fake_cond_noise.double(), self.alphas_cumprod.double(), dm_timesteps
@@ -153,8 +159,12 @@ class SDDecoupledGuidance(SDGuidance):
             "pred_dm_fake_cond_image": pred_dm_fake_cond_image.detach().float(),
             "ca_update_vector": ca_update_vector.detach().float(),
             "dm_update_vector": dm_update_vector.detach().float(),
-            "ca_norm_factor": ca_norm_factor.detach().float(),
-            "dm_norm_factor": dm_norm_factor.detach().float()
+            "ca_norm_factor": ca_norm_factor.detach().float().mean(),  # 记录标量平均值
+            "dm_norm_factor": dm_norm_factor.detach().float().mean(),  # 记录标量平均值
+            "ca_update_norm": torch.norm(ca_update_vector).item(),  # 添加更新向量的范数
+            "dm_update_norm": torch.norm(dm_update_vector).item(),  # 添加更新向量的范数
+            "ca_timesteps_mean": ca_timesteps.float().mean().item(),  # CA 时间步平均值
+            "dm_timesteps_mean": dm_timesteps.float().mean().item(),  # DM 时间步平均值
         }
 
         return loss_dict, decoupled_log_dict

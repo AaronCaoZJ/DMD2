@@ -418,17 +418,33 @@ class Trainer:
 
         if COMPUTE_GENERATOR_GRADIENT:
             if not self.args.gan_alone:
-                dmtrain_pred_real_image_mean = log_dict['dmtrain_pred_real_image'].mean()
-                dmtrain_pred_real_iamge_std = log_dict['dmtrain_pred_real_image'].std()
+                # 根据 use_decoupled_dmd 选择不同的 key
+                if getattr(self.args, 'use_decoupled_dmd', False):
+                    # Decoupled 模式：使用 pred_dm_real_cond_image 作为主要指标
+                    dmtrain_pred_real_image_mean = log_dict['pred_dm_real_cond_image'].mean()
+                    dmtrain_pred_real_iamge_std = log_dict['pred_dm_real_cond_image'].std()
 
-                dmtrain_pred_real_image_mean = accelerator.gather(dmtrain_pred_real_image_mean).mean()
-                dmtrain_pred_real_iamge_std = accelerator.gather(dmtrain_pred_real_iamge_std).mean()
+                    dmtrain_pred_real_image_mean = accelerator.gather(dmtrain_pred_real_image_mean).mean()
+                    dmtrain_pred_real_iamge_std = accelerator.gather(dmtrain_pred_real_iamge_std).mean()
 
-                dmtrain_pred_fake_image_mean = log_dict['dmtrain_pred_fake_image'].mean()
-                dmtrain_pred_fake_image_std = log_dict['dmtrain_pred_fake_image'].std()
+                    dmtrain_pred_fake_image_mean = log_dict['pred_dm_fake_cond_image'].mean()
+                    dmtrain_pred_fake_image_std = log_dict['pred_dm_fake_cond_image'].std()
 
-                dmtrain_pred_fake_image_mean = accelerator.gather(dmtrain_pred_fake_image_mean).mean()
-                dmtrain_pred_fake_image_std = accelerator.gather(dmtrain_pred_fake_image_std).mean()
+                    dmtrain_pred_fake_image_mean = accelerator.gather(dmtrain_pred_fake_image_mean).mean()
+                    dmtrain_pred_fake_image_std = accelerator.gather(dmtrain_pred_fake_image_std).mean()
+                else:
+                    # 普通模式
+                    dmtrain_pred_real_image_mean = log_dict['dmtrain_pred_real_image'].mean()
+                    dmtrain_pred_real_iamge_std = log_dict['dmtrain_pred_real_image'].std()
+
+                    dmtrain_pred_real_image_mean = accelerator.gather(dmtrain_pred_real_image_mean).mean()
+                    dmtrain_pred_real_iamge_std = accelerator.gather(dmtrain_pred_real_iamge_std).mean()
+
+                    dmtrain_pred_fake_image_mean = log_dict['dmtrain_pred_fake_image'].mean()
+                    dmtrain_pred_fake_image_std = log_dict['dmtrain_pred_fake_image'].std()
+
+                    dmtrain_pred_fake_image_mean = accelerator.gather(dmtrain_pred_fake_image_mean).mean()
+                    dmtrain_pred_fake_image_std = accelerator.gather(dmtrain_pred_fake_image_std).mean()
 
         if self.denoising:
             original_image_mean = denoising_dict["images"].mean()
@@ -466,8 +482,29 @@ class Trainer:
                 wandb_loss_dict["generator_grad_norm"] = generator_grad_norm.item()
 
                 if not self.args.gan_alone:
-                    wandb_loss_dict["loss_dm"] = loss_dict['loss_dm'].item()
-                    wandb_loss_dict["dmtrain_gradient_norm"] = log_dict['dmtrain_gradient_norm']
+                    if getattr(self.args, 'use_decoupled_dmd', False):
+                        # Decoupled 模式使用不同的 loss 名称
+                        wandb_loss_dict["loss_decoupled"] = loss_dict['loss_decoupled'].item()
+                        wandb_loss_dict["loss_ca"] = loss_dict['loss_ca'].item()
+                        wandb_loss_dict["loss_dm"] = loss_dict['loss_dm'].item()
+                        
+                        # 添加 decoupled 特有的指标
+                        if 'ca_norm_factor' in log_dict:
+                            wandb_loss_dict["ca_norm_factor"] = log_dict['ca_norm_factor']
+                        if 'dm_norm_factor' in log_dict:
+                            wandb_loss_dict["dm_norm_factor"] = log_dict['dm_norm_factor']
+                        if 'ca_update_norm' in log_dict:
+                            wandb_loss_dict["ca_update_norm"] = log_dict['ca_update_norm']
+                        if 'dm_update_norm' in log_dict:
+                            wandb_loss_dict["dm_update_norm"] = log_dict['dm_update_norm']
+                        if 'ca_timesteps_mean' in log_dict:
+                            wandb_loss_dict["ca_timesteps_mean"] = log_dict['ca_timesteps_mean']
+                        if 'dm_timesteps_mean' in log_dict:
+                            wandb_loss_dict["dm_timesteps_mean"] = log_dict['dm_timesteps_mean']
+                    else:
+                        # 普通模式
+                        wandb_loss_dict["loss_dm"] = loss_dict['loss_dm'].item()
+                        wandb_loss_dict["dmtrain_gradient_norm"] = log_dict['dmtrain_gradient_norm']
 
                 if self.gen_cls_loss:
                     wandb_loss_dict.update({
@@ -486,8 +523,17 @@ class Trainer:
 
         if visual:
             if not self.args.gan_alone:
-                log_dict['dmtrain_pred_real_image_decoded'] = accelerator.gather(log_dict['dmtrain_pred_real_image_decoded'])
-                log_dict['dmtrain_pred_fake_image_decoded'] = accelerator.gather(log_dict['dmtrain_pred_fake_image_decoded'])
+                # 根据 use_decoupled_dmd 选择要 gather 的 key
+                if getattr(self.args, 'use_decoupled_dmd', False):
+                    # Decoupled 模式
+                    for key in ['pred_dm_real_cond_image_decoded', 'pred_dm_fake_cond_image_decoded',
+                                'pred_ca_real_cond_image_decoded', 'pred_ca_real_uncond_image_decoded']:
+                        if key in log_dict:
+                            log_dict[key] = accelerator.gather(log_dict[key])
+                else:
+                    # 普通模式
+                    log_dict['dmtrain_pred_real_image_decoded'] = accelerator.gather(log_dict['dmtrain_pred_real_image_decoded'])
+                    log_dict['dmtrain_pred_fake_image_decoded'] = accelerator.gather(log_dict['dmtrain_pred_fake_image_decoded'])
         
             log_dict['generated_image'] = accelerator.gather(log_dict['generated_image'])
 
@@ -501,35 +547,75 @@ class Trainer:
         if accelerator.is_main_process and visual:
             with torch.no_grad():
                 if not self.args.gan_alone:
-                    (
-                        dmtrain_pred_real_image, dmtrain_pred_fake_image, 
-                        dmtrain_gradient_norm
-                    ) = (
-                        log_dict['dmtrain_pred_real_image_decoded'], log_dict['dmtrain_pred_fake_image_decoded'], 
-                        log_dict['dmtrain_gradient_norm']
-                    )
+                    if getattr(self.args, 'use_decoupled_dmd', False):
+                        # Decoupled 模式：可视化 CA 和 DM 的图像
+                        data_dict = {}
+                        
+                        if 'pred_dm_real_cond_image_decoded' in log_dict:
+                            pred_dm_real_cond_image_grid = prepare_images_for_saving(
+                                log_dict['pred_dm_real_cond_image_decoded'], 
+                                resolution=self.resolution, grid_size=self.grid_size
+                            )
+                            data_dict["pred_dm_real_cond_image"] = wandb.Image(pred_dm_real_cond_image_grid)
+                        
+                        if 'pred_dm_fake_cond_image_decoded' in log_dict:
+                            pred_dm_fake_cond_image_grid = prepare_images_for_saving(
+                                log_dict['pred_dm_fake_cond_image_decoded'], 
+                                resolution=self.resolution, grid_size=self.grid_size
+                            )
+                            data_dict["pred_dm_fake_cond_image"] = wandb.Image(pred_dm_fake_cond_image_grid)
+                        
+                        if 'pred_ca_real_cond_image_decoded' in log_dict:
+                            pred_ca_real_cond_image_grid = prepare_images_for_saving(
+                                log_dict['pred_ca_real_cond_image_decoded'], 
+                                resolution=self.resolution, grid_size=self.grid_size
+                            )
+                            data_dict["pred_ca_real_cond_image"] = wandb.Image(pred_ca_real_cond_image_grid)
+                        
+                        if 'pred_ca_real_uncond_image_decoded' in log_dict:
+                            pred_ca_real_uncond_image_grid = prepare_images_for_saving(
+                                log_dict['pred_ca_real_uncond_image_decoded'], 
+                                resolution=self.resolution, grid_size=self.grid_size
+                            )
+                            data_dict["pred_ca_real_uncond_image"] = wandb.Image(pred_ca_real_uncond_image_grid)
+                        
+                        # 添加 loss 信息
+                        data_dict.update({
+                            "loss_decoupled": loss_dict['loss_decoupled'].item(),
+                            "loss_ca": loss_dict['loss_ca'].item(),
+                            "loss_dm": loss_dict['loss_dm'].item(),
+                        })
+                    else:
+                        # 普通模式
+                        (
+                            dmtrain_pred_real_image, dmtrain_pred_fake_image, 
+                            dmtrain_gradient_norm
+                        ) = (
+                            log_dict['dmtrain_pred_real_image_decoded'], log_dict['dmtrain_pred_fake_image_decoded'], 
+                            log_dict['dmtrain_gradient_norm']
+                        )
 
-                    dmtrain_pred_real_image_grid = prepare_images_for_saving(dmtrain_pred_real_image, resolution=self.resolution, grid_size=self.grid_size)
-                    dmtrain_pred_fake_image_grid = prepare_images_for_saving(dmtrain_pred_fake_image, resolution=self.resolution, grid_size=self.grid_size)
+                        dmtrain_pred_real_image_grid = prepare_images_for_saving(dmtrain_pred_real_image, resolution=self.resolution, grid_size=self.grid_size)
+                        dmtrain_pred_fake_image_grid = prepare_images_for_saving(dmtrain_pred_fake_image, resolution=self.resolution, grid_size=self.grid_size)
 
-                    difference_scale_grid = draw_valued_array(
-                        (dmtrain_pred_real_image - dmtrain_pred_fake_image).abs().mean(dim=[1, 2, 3]).cpu().numpy(), 
-                        output_dir=self.wandb_folder, grid_size=self.grid_size
-                    )
+                        difference_scale_grid = draw_valued_array(
+                            (dmtrain_pred_real_image - dmtrain_pred_fake_image).abs().mean(dim=[1, 2, 3]).cpu().numpy(), 
+                            output_dir=self.wandb_folder, grid_size=self.grid_size
+                        )
 
-                    difference = (dmtrain_pred_real_image - dmtrain_pred_fake_image)
-                    difference = (difference - difference.min()) / (difference.max() - difference.min())
-                    difference = (difference - 0.5)/0.5
-                    difference = prepare_images_for_saving(difference, resolution=self.resolution, grid_size=self.grid_size)
+                        difference = (dmtrain_pred_real_image - dmtrain_pred_fake_image)
+                        difference = (difference - difference.min()) / (difference.max() - difference.min())
+                        difference = (difference - 0.5)/0.5
+                        difference = prepare_images_for_saving(difference, resolution=self.resolution, grid_size=self.grid_size)
 
-                    data_dict = {
-                        "dmtrain_pred_real_image": wandb.Image(dmtrain_pred_real_image_grid),
-                        "dmtrain_pred_fake_image": wandb.Image(dmtrain_pred_fake_image_grid),
-                        "loss_dm": loss_dict['loss_dm'].item(),
-                        "dmtrain_gradient_norm": dmtrain_gradient_norm,
-                        "difference": wandb.Image(difference),
-                        "difference_norm_grid": wandb.Image(difference_scale_grid),
-                    }
+                        data_dict = {
+                            "dmtrain_pred_real_image": wandb.Image(dmtrain_pred_real_image_grid),
+                            "dmtrain_pred_fake_image": wandb.Image(dmtrain_pred_fake_image_grid),
+                            "loss_dm": loss_dict['loss_dm'].item(),
+                            "dmtrain_gradient_norm": dmtrain_gradient_norm,
+                            "difference": wandb.Image(difference),
+                            "difference_norm_grid": wandb.Image(difference_scale_grid),
+                        }
                 else:
                     data_dict = {} 
 

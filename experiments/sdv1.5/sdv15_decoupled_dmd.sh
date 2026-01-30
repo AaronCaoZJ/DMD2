@@ -39,12 +39,13 @@ accelerate launch --config_file fsdp_configs/fsdp_1node_2x5090_mix.yaml main/tra
     --wandb_project $WANDB_PROJECT \
     --use_fp16 \
     --log_loss \
-    --dfake_gen_update_ratio 5 \
+    --dfake_gen_update_ratio 10 \
     --fsdp \
     --denoising \
     --num_denoising_step 4 \
     --denoising_timestep 1000 \
-    --backward_simulation
-    # --use_decoupled 
+    --backward_simulation \
+    --use_decoupled_dmd \
+    --cfg_weight 
 
 
