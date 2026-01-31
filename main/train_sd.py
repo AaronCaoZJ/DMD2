@@ -8,6 +8,7 @@ from diffusers.optimization import get_scheduler
 from main.utils import SDTextDataset, cycle 
 from main.sd_unified_model import SDUniModel
 from accelerate.utils import set_seed
+import gc
 from accelerate import Accelerator
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
@@ -259,7 +260,10 @@ class Trainer:
             model, StateDictType.FULL_STATE_DICT, fsdp_fullstate_save_policy
         ):
             checkpoint = model.state_dict()
-
+        
+        # Explicitly trigger garbage collection to free memory
+        gc.collect()
+        torch.cuda.empty_cache()
         return checkpoint 
 
     def load(self, checkpoint_path):
@@ -276,20 +280,23 @@ class Trainer:
         # If FSDP is used, we only save the model parameter as I haven't figured out how to save the optimizer state without oom yet, help is appreciated.
         # Otherwise, we use the default accelerate save_state function 
         
-        if self.fsdp:
-            feedforward_state_dict = self.fsdp_state_dict(self.model.feedforward_model)
-            guidance_model_state_dict = self.fsdp_state_dict(self.model.guidance_model)
-
         if self.accelerator.is_main_process:
             output_path = os.path.join(self.output_path, f"checkpoint_model_{self.step:06d}")
             os.makedirs(output_path, exist_ok=True)
             print(f"start saving checkpoint to {output_path}")
 
             if self.fsdp: 
+                feedforward_state_dict = self.fsdp_state_dict(self.model.feedforward_model)
                 torch.save(feedforward_state_dict, os.path.join(output_path, f"pytorch_model.bin"))
                 del feedforward_state_dict
+                gc.collect()
+                torch.cuda.empty_cache()
+                
+                guidance_model_state_dict = self.fsdp_state_dict(self.model.guidance_model)
                 torch.save(guidance_model_state_dict, os.path.join(output_path, f"pytorch_model_1.bin"))
                 del guidance_model_state_dict
+                gc.collect()
+                torch.cuda.empty_cache()
             else:
                 self.accelerator.save_state(output_path) 
 
@@ -316,6 +323,9 @@ class Trainer:
                 for folder in checkpoints[:-self.max_checkpoint]:
                     shutil.rmtree(os.path.join(self.cache_dir, folder))
             print("done saving")
+        
+        # Wait for main process to finish saving before all processes continue
+        self.accelerator.wait_for_everyone()
         torch.cuda.empty_cache()
 
     def train_one_step(self):
