@@ -320,6 +320,54 @@ if self.fsdp:
         torch.save(guidance_model_state_dict, guidance_path)
 ```
 
+**Accelerator在这里是分布式训练的"中央协调者"和"抽象层"。它承担三大核心职责：**
+
+1. 分布式策略管理 - 通过FSDP配置文件自动选择ZeRO-3分片策略，将UNet和Guidance两个大模型的参数、梯度、优化器状态分片到8张GPU上，使单卡无法训练的模型成为可能。
+
+2. 训练流程自动化 - 用prepare()包装模型、优化器、数据加载器后，自动处理分布式采样、梯度同步、参数收集/释放等底层细节；用backward()替代原生反向传播，自动管理梯度累积和混合精度；用gather()收集多卡指标用于日志记录。
+
+3. 进程协调控制 - 通过is_main_process确保文件IO、WandB日志、checkpoint保存只执行一次；通过wait_for_everyone()在关键节点（如初始化同步、保存检查点）实现进程同步，避免竞态条件。
+
+### 3.5 FSDP 参数选择
+
+#### Sharding Strategy（分片策略）
+这是最核心的配置，决定参数、梯度、优化器状态如何分片
+```yaml
+fsdp_sharding_strategy: 0 - 4
+```
+1. `0 = NO_SHARD`，不分片，等同于DDP
+
+2. `1 = FULL_SHARD`，完全分片，参数、梯度、优化器状态都分片，最省显存，ZeRO-3等价
+
+3. `2 = SHARD_GRAD_OP`，只分片梯度和优化器状态，参数完整保留在每个GPU，ZeRO-2等价
+
+4. `3 = HYBRID_SHARD`，混合分片（多节点训练），节点内FULL_SHARD，节点间复制，适合跨节点带宽较低的场景
+
+5. `4 = HYBRID_SHARD_ZERO2`，混合分片的ZeRO-2版本
+
+**ZeRO**
+Zero Redundancy Optimizer，是微软DeepSpeed提出的分布式训练内存优化技术
+* ZeRO-1 仅对优化器分片
+* ZeRO-2 在 ZeRO-1 的基础上，梯度也分片
+* ZeRO-3 完全分片
+
+#### Auto Wrap Policy（自动包裹策略）
+```yaml
+fsdp_auto_wrap_policy: SIZE_BASED_WRAP / TRANSFORMER_BASED_WRAP / NO_WRAP (手动)
+fsdp_min_num_params: 50000000           # 50M参数阈值
+```
+
+#### Backward Prefetch Policy（反向预取）
+可以在反向传播过程中，后一层计算时或计算后释放前，提前预取上一层的数据，弥补通信延迟
+```yaml
+fsdp_backward_prefetch_policy: BACKWARD_PRE / BACKWARD_POST / NO_PREFETCH
+```
+
+#### State Dict Type（状态字典保存方式）
+```yaml
+fsdp_state_dict_type: SHARDED_STATE_DICT / FULL_STATE_DICT / LOCAL_STATE_DICT
+```
+
 ---
 
 ## 四、警告信息分析与优化建议
